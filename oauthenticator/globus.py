@@ -140,6 +140,7 @@ class GlobusOAuthenticator(OAuthenticator):
             globus_data = base64.b64encode(
                 pickle.dumps(state)
             )
+            print('Auth State Tokens: ', state.get('tokens', {}).keys())
             spawner.environment['GLOBUS_DATA'] = globus_data.decode('utf-8')
 
     def globus_portal_client(self):
@@ -178,8 +179,17 @@ class GlobusOAuthenticator(OAuthenticator):
                     'globus.org/app/account'
                     )
             )
+        print('Using exclude token rules: ', self.exclude_tokens)
+        print('Using scopes: ', self.scope)
+        toks = list(tokens.by_resource_server.keys())
+        print('Loaded Tokens {}, but only using {}'.format(
+            toks, [t for t in toks if t not in self.exclude_tokens]
+        ))
+        enc_sub = base64.b32encode(bytes(id_token['sub'], 'utf-8'))
+        enc_sub_str = enc_sub.decode('utf-8')
+        unique_username = '{}{}'.format(username, enc_sub_str)[:30]
         return {
-            'name': username,
+            'name': unique_username,
             'auth_state': {
                 'client_id': self.client_id,
                 'tokens': {
