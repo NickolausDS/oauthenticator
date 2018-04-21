@@ -186,6 +186,7 @@ class GlobusOAuthenticator(OAuthenticator):
                     tok: v for tok, v in tokens.by_resource_server.items()
                     if tok not in self.exclude_tokens
                 },
+                'id_token': id_token
             }
         }
 
