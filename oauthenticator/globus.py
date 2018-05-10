@@ -140,7 +140,7 @@ class GlobusOAuthenticator(OAuthenticator):
             globus_data = base64.b64encode(
                 pickle.dumps(state)
             )
-            spawner.environment['GLOBUS_DATA'] = globus_data
+            spawner.environment['GLOBUS_DATA'] = globus_data.decode('utf-8')
 
     def globus_portal_client(self):
         return globus_sdk.ConfidentialAppAuthClient(
@@ -186,6 +186,7 @@ class GlobusOAuthenticator(OAuthenticator):
                     tok: v for tok, v in tokens.by_resource_server.items()
                     if tok not in self.exclude_tokens
                 },
+                'id_token': id_token
             }
         }
 
