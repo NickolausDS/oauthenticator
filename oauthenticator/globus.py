@@ -167,7 +167,10 @@ class GlobusOAuthenticator(OAuthenticator):
         # Doing the code for token for id_token exchange
         tokens = client.oauth2_exchange_code_for_tokens(code)
         id_token = tokens.decode_id_token(client)
-        username, domain = id_token.get('preferred_username').split('@')
+        id_chunks = id_token.get('preferred_username').split('@')
+        username, domain = id_chunks[0], id_chunks[1]
+        self.log.info('user Logged in: {}'.format(id_chunks))
+
 
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(
