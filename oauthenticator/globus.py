@@ -15,6 +15,24 @@ from jupyterhub.handlers import LogoutHandler
 from jupyterhub.auth import LocalAuthenticator
 from jupyterhub.utils import url_path_join
 
+import json
+import os
+import base64
+import urllib
+
+from tornado.auth import OAuth2Mixin
+from tornado import web
+
+from tornado.httputil import url_concat
+from tornado.httpclient import HTTPRequest, AsyncHTTPClient
+
+from jupyterhub.auth import LocalAuthenticator
+
+from traitlets import Unicode, Dict, Bool, Union, default, observe
+from .traitlets import Callable
+
+from .oauth2 import OAuthLoginHandler, OAuthenticator
+
 from .oauth2 import OAuthenticator
 
 
@@ -70,6 +88,14 @@ class GlobusOAuthenticator(OAuthenticator):
     @default("authorize_url")
     def _authorize_url_default(self):
         return "https://auth.globus.org/v2/oauth2/authorize"
+
+    @default("revocation_url")
+    def _revocation_url_default(self):
+        return "https://auth.globus.org/v2/oauth2/token/revoke"
+
+    @default("token_url")
+    def _token_url_default(self):
+        return "https://auth.globus.org/v2/oauth2/token"
 
     identity_provider = Unicode(
         help="""Restrict which institution a user
@@ -148,18 +174,49 @@ class GlobusOAuthenticator(OAuthenticator):
         accounts) will correspond to a Globus User ID, so foouser@globusid.org
         will have the 'foouser' account in Jupyterhub.
         """
-        code = handler.get_argument("code")
-        redirect_uri = self.get_callback_url(self)
 
-        client = self.globus_portal_client()
-        client.oauth2_start_flow(
-            redirect_uri,
-            requested_scopes=' '.join(self.scope),
-            refresh_tokens=self.allow_refresh_tokens,
+        code = handler.get_argument("code")
+        http_client = AsyncHTTPClient()
+
+        redirect_uri = self.get_callback_url(self)
+        if not self.token_url:
+            raise ValueError("Please set the $OAUTH2_TOKEN_URL environment variable")
+        params = dict(
+            redirect_uri=self.get_callback_url(handler),
+            code=code,
+            grant_type='authorization_code',
         )
-        # Doing the code for token for id_token exchange
-        tokens = client.oauth2_exchange_code_for_tokens(code)
-        id_token = tokens.decode_id_token(client)
+        headers = {"Accept": "application/json",
+                   "User-Agent": "JupyterHub"}
+
+        b64key = base64.b64encode(
+            bytes("{}:{}".format(self.client_id, self.client_secret), "utf8")
+        )
+        headers.update({"Authorization": "Basic {}".format(b64key.decode("utf8"))})
+
+        req = HTTPRequest(
+            self.token_url,
+            method="POST",
+            headers=headers,
+            # validate_cert=self.tls_verify,
+            body=urllib.parse.urlencode(params),
+        )
+
+        resp = await http_client.fetch(req)
+
+        resp_json = json.loads(resp.body.decode('utf8', 'replace'))
+
+        from pprint import pprint
+        pprint(resp_json)
+        # client = self.globus_portal_client()
+        # client.oauth2_start_flow(
+        #     redirect_uri,
+        #     requested_scopes=' '.join(self.scope),
+        #     refresh_tokens=self.allow_refresh_tokens,
+        # )
+        # # Doing the code for token for id_token exchange
+        # tokens = client.oauth2_exchange_code_for_tokens(code)
+        # id_token = tokens.decode_id_token(client)
         # It's possible for identity provider domains to be namespaced
         # https://docs.globus.org/api/auth/specification/#identity_provider_namespaces # noqa
         username, domain = id_token.get('preferred_username').split('@', 1)
