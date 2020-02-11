@@ -3,46 +3,20 @@ Custom Authenticator to use Globus OAuth2 with JupyterHub
 """
 import os
 import pickle
+import json
 import base64
+import urllib
 
-from tornado import web
-from tornado.auth import OAuth2Mixin
 from tornado.web import HTTPError
+from tornado.httpclient import HTTPRequest, AsyncHTTPClient
 
 from traitlets import List, Unicode, Bool, default
 
 from jupyterhub.handlers import LogoutHandler
-from jupyterhub.auth import LocalAuthenticator
 from jupyterhub.utils import url_path_join
-
-import json
-import os
-import base64
-import urllib
-
-from tornado.auth import OAuth2Mixin
-from tornado import web
-
-from tornado.httputil import url_concat
-from tornado.httpclient import HTTPRequest, AsyncHTTPClient
-
 from jupyterhub.auth import LocalAuthenticator
-
-from traitlets import Unicode, Dict, Bool, Union, default, observe
-from .traitlets import Callable
-
-from .oauth2 import OAuthLoginHandler, OAuthenticator
 
 from .oauth2 import OAuthenticator
-
-
-try:
-    import globus_sdk
-except:
-    raise ImportError(
-        'globus_sdk is not installed, please see '
-        '"globus-requirements.txt" for using Globus oauth.'
-    )
 
 
 class GlobusLogoutHandler(LogoutHandler):
@@ -85,6 +59,14 @@ class GlobusOAuthenticator(OAuthenticator):
     login_service = 'Globus'
     logout_handler = GlobusLogoutHandler
 
+    @default("userinfo_url")
+    def _userinfo_url_default(self):
+        return "https://auth.globus.org/v2/oauth2/userinfo"
+
+    userinfo_url = Unicode(
+        help="Globus URL to fetch details on a user after successful authentication"
+    ).tag(config=True)
+
     @default("authorize_url")
     def _authorize_url_default(self):
         return "https://auth.globus.org/v2/oauth2/authorize"
@@ -92,6 +74,11 @@ class GlobusOAuthenticator(OAuthenticator):
     @default("revocation_url")
     def _revocation_url_default(self):
         return "https://auth.globus.org/v2/oauth2/token/revoke"
+
+    revocation_url = Unicode(
+        help="Globus URL to revoke live tokens."
+    ).tag(config=True)
+
 
     @default("token_url")
     def _token_url_default(self):
@@ -165,61 +152,42 @@ class GlobusOAuthenticator(OAuthenticator):
             globus_data = base64.b64encode(pickle.dumps(state))
             spawner.environment['GLOBUS_DATA'] = globus_data.decode('utf-8')
 
-    def globus_portal_client(self):
-        return globus_sdk.ConfidentialAppAuthClient(self.client_id, self.client_secret)
-
     async def authenticate(self, handler, data=None):
         """
         Authenticate with globus.org. Usernames (and therefore Jupyterhub
         accounts) will correspond to a Globus User ID, so foouser@globusid.org
         will have the 'foouser' account in Jupyterhub.
         """
-
-        code = handler.get_argument("code")
         http_client = AsyncHTTPClient()
 
-        redirect_uri = self.get_callback_url(self)
         if not self.token_url:
             raise ValueError("Please set the $OAUTH2_TOKEN_URL environment variable")
+
         params = dict(
             redirect_uri=self.get_callback_url(handler),
-            code=code,
+            code=handler.get_argument("code"),
             grant_type='authorization_code',
         )
-        headers = {"Accept": "application/json",
-                   "User-Agent": "JupyterHub"}
-
-        b64key = base64.b64encode(
-            bytes("{}:{}".format(self.client_id, self.client_secret), "utf8")
-        )
-        headers.update({"Authorization": "Basic {}".format(b64key.decode("utf8"))})
-
         req = HTTPRequest(
             self.token_url,
             method="POST",
-            headers=headers,
+            headers=self.get_client_credential_headers(),
             # validate_cert=self.tls_verify,
             body=urllib.parse.urlencode(params),
         )
+        token_response = await http_client.fetch(req)
+        token_json = json.loads(token_response.body.decode('utf8', 'replace'))
 
-        resp = await http_client.fetch(req)
-
-        resp_json = json.loads(resp.body.decode('utf8', 'replace'))
-
-        from pprint import pprint
-        pprint(resp_json)
-        # client = self.globus_portal_client()
-        # client.oauth2_start_flow(
-        #     redirect_uri,
-        #     requested_scopes=' '.join(self.scope),
-        #     refresh_tokens=self.allow_refresh_tokens,
-        # )
-        # # Doing the code for token for id_token exchange
-        # tokens = client.oauth2_exchange_code_for_tokens(code)
-        # id_token = tokens.decode_id_token(client)
+        user_headers = self.get_default_headers()
+        user_headers['Authorization'] = 'Bearer {}'.format(token_json['access_token'])
+        req = HTTPRequest(self.userinfo_url, method='GET', headers=user_headers,
+                          # validate_cert=self.tls_verify,
+        )
+        user_resp = await http_client.fetch(req)
+        user_json = json.loads(user_resp.body.decode('utf8', 'replace'))
         # It's possible for identity provider domains to be namespaced
         # https://docs.globus.org/api/auth/specification/#identity_provider_namespaces # noqa
-        username, domain = id_token.get('preferred_username').split('@', 1)
+        username, domain = user_json.get('preferred_username').split('@', 1)
 
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(
@@ -231,19 +199,38 @@ class GlobusOAuthenticator(OAuthenticator):
                     'globus.org/app/account',
                 ),
             )
+
+        tokens = token_json['other_tokens']
+        token_attrs = ['expires_in', 'resource_server', 'scope', 'state',
+                       'token_type', 'refresh_token', 'access_token']
+        tokens.append({attr_name: token_json.get(attr_name) for attr_name in token_attrs})
         return {
             'name': username,
             'auth_state': {
                 'client_id': self.client_id,
                 'tokens': {
-                    tok: v
-                    for tok, v in tokens.by_resource_server.items()
-                    if tok not in self.exclude_tokens
+                    token_dict['resource_server']: token_dict
+                    for token_dict in tokens
+                    if token_dict['resource_server'] not in self.exclude_tokens
                 },
             },
         }
 
-    def revoke_service_tokens(self, services):
+    def get_default_headers(self):
+        return {
+            "Accept": "application/json",
+            "User-Agent": "JupyterHub",
+        }.copy()
+
+    def get_client_credential_headers(self):
+        headers = self.get_default_headers()
+        b64key = base64.b64encode(
+            bytes("{}:{}".format(self.client_id, self.client_secret), "utf8")
+        )
+        headers["Authorization"] = "Basic {}".format(b64key.decode("utf8"))
+        return headers
+
+    async def revoke_service_tokens(self, services):
         """Revoke live Globus access and refresh tokens. Revoking inert or
         non-existent tokens does nothing. Services are defined by dicts
         returned by tokens.by_resource_server, for example:
@@ -251,10 +238,18 @@ class GlobusOAuthenticator(OAuthenticator):
             <Additional services>...
         }
         """
-        client = self.globus_portal_client()
-        for service_data in services.values():
-            client.oauth2_revoke_token(service_data['access_token'])
-            client.oauth2_revoke_token(service_data['refresh_token'])
+        access_tokens = [token_dict.get('access_token') for token_dict in services.values()]
+        refresh_tokens = [token_dict.get('refresh_token') for token_dict in services.values()]
+        all_tokens = [tok for tok in access_tokens + refresh_tokens if tok is not None]
+        http_client = AsyncHTTPClient()
+        for token in all_tokens:
+            req = HTTPRequest(self.revocation_url,
+                              method="POST",
+                              headers=self.get_default_headers(),
+                              # validate_cert=self.tls_verify,
+                              body=urllib.parse.urlencode({'token': token}),
+                              )
+            await http_client.fetch(req)
 
     def get_callback_url(self, handler=None):
         """
