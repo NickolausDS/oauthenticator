@@ -167,37 +167,31 @@ class GlobusOAuthenticator(OAuthenticator):
         accounts) will correspond to a Globus User ID, so foouser@globusid.org
         will have the 'foouser' account in Jupyterhub.
         """
+        # Complete login and exchange the code for tokens.
         http_client = AsyncHTTPClient()
-
         if not self.token_url:
             raise ValueError("Please set the $OAUTH2_TOKEN_URL environment variable")
-
         params = dict(
             redirect_uri=self.get_callback_url(handler),
             code=handler.get_argument("code"),
             grant_type='authorization_code',
         )
-        req = HTTPRequest(
-            self.token_url,
-            method="POST",
+        req = HTTPRequest(self.token_url, method="POST",
             headers=self.get_client_credential_headers(),
-            # validate_cert=self.tls_verify,
             body=urllib.parse.urlencode(params),
         )
         token_response = await http_client.fetch(req)
         token_json = json.loads(token_response.body.decode('utf8', 'replace'))
 
+        # Fetch user info at Globus's oauth2/userinfo/ HTTP endpoint to get the username
         user_headers = self.get_default_headers()
         user_headers['Authorization'] = 'Bearer {}'.format(token_json['access_token'])
-        req = HTTPRequest(self.userinfo_url, method='GET', headers=user_headers,
-                          # validate_cert=self.tls_verify,
-        )
+        req = HTTPRequest(self.userinfo_url, method='GET', headers=user_headers)
         user_resp = await http_client.fetch(req)
         user_json = json.loads(user_resp.body.decode('utf8', 'replace'))
         # It's possible for identity provider domains to be namespaced
         # https://docs.globus.org/api/auth/specification/#identity_provider_namespaces # noqa
         username, domain = user_json.get('preferred_username').split('@', 1)
-
         if self.identity_provider and domain != self.identity_provider:
             raise HTTPError(
                 403,
@@ -209,27 +203,38 @@ class GlobusOAuthenticator(OAuthenticator):
                 ),
             )
 
-        tokens = token_json['other_tokens']
-        token_attrs = ['expires_in', 'resource_server', 'scope', 'state',
+        # Each token should have these attributes. Resource server is optional,
+        # and likely won't be present.
+        token_attrs = ['expires_in', 'resource_server', 'scope',
                        'token_type', 'refresh_token', 'access_token']
-        tokens.append({attr_name: token_json.get(attr_name) for attr_name in token_attrs})
+        # The Auth Token is a bit special, it comes back at the top level with the
+        # id token. The id token has some useful information in it, but nothing that
+        # can't be retrieved with an Auth token.
+        # Repackage the Auth token into a dict that looks like the other tokens
+        auth_token_dict = {attr_name: token_json.get(attr_name) for attr_name in token_attrs}
+        # Make sure only the essentials make it into tokens. Other items, such as 'state' are
+        # not needed after authentication and can be discarded.
+        other_tokens = [{attr_name: token_dict.get(attr_name) for attr_name in token_attrs}
+                        for token_dict in token_json['other_tokens']]
+        tokens = other_tokens + [auth_token_dict]
+        # historically, tokens have been organized by resource server for convenience.
+        # If multiple scopes are requested from the same resource server, they will be
+        # combined into a single token from Globus Auth.
+        by_resource_server = {
+                    token_dict['resource_server']: token_dict
+                    for token_dict in tokens
+                    if token_dict['resource_server'] not in self.exclude_tokens
+                }
         return {
             'name': username,
             'auth_state': {
                 'client_id': self.client_id,
-                'tokens': {
-                    token_dict['resource_server']: token_dict
-                    for token_dict in tokens
-                    if token_dict['resource_server'] not in self.exclude_tokens
-                },
+                'tokens': by_resource_server,
             },
         }
 
     def get_default_headers(self):
-        return {
-            "Accept": "application/json",
-            "User-Agent": "JupyterHub",
-        }.copy()
+        return {"Accept": "application/json", "User-Agent": "JupyterHub"}
 
     def get_client_credential_headers(self):
         headers = self.get_default_headers()
@@ -254,8 +259,7 @@ class GlobusOAuthenticator(OAuthenticator):
         for token in all_tokens:
             req = HTTPRequest(self.revocation_url,
                               method="POST",
-                              headers=self.get_default_headers(),
-                              # validate_cert=self.tls_verify,
+                              headers=self.get_client_credential_headers(),
                               body=urllib.parse.urlencode({'token': token}),
                               )
             await http_client.fetch(req)
