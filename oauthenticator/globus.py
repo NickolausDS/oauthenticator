@@ -28,21 +28,30 @@ class GlobusLogoutHandler(LogoutHandler):
     """
 
     async def get(self):
+        # Ensure self.handle_logout() is called before self.default_handle_logout()
+        # If default_handle_logout() is called first, the user session is popped and
+        # it's not longer possible to call get_auth_state() to revoke tokens.
+        # See https://github.com/jupyterhub/jupyterhub/blob/master/jupyterhub/handlers/login.py  # noqa
+        await self.handle_logout()
+        await self.default_handle_logout()
         if self.authenticator.logout_redirect_url:
-            await self.default_handle_logout()
-            await self.handle_logout()
+            # super().get() will attempt to render a logout page. Make sure we
+            # return after the redirect to avoid exceptions.
             self.redirect(self.authenticator.logout_redirect_url)
-        else:
-            await super().get()
+            return
+        await super().get()
 
     async def handle_logout(self):
+        """Overridden method for custom logout functionality. Should be called by
+        Jupyterhub on logout just before destroying the users session to log them out."""
         if self.current_user and self.authenticator.revoke_tokens_on_logout:
             await self.clear_tokens(self.current_user)
 
     async def clear_tokens(self, user):
+        """Revoke and clear user tokens from the database"""
         state = await user.get_auth_state()
         if state:
-            self.authenticator.revoke_service_tokens(state.get('tokens'))
+            await self.authenticator.revoke_service_tokens(state.get('tokens'))
             self.log.info(
                 'Logout: Revoked tokens for user "{}" services: {}'.format(
                     user.name, ','.join(state['tokens'].keys())
