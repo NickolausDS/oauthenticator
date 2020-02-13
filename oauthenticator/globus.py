@@ -113,16 +113,6 @@ class GlobusOAuthenticator(OAuthenticator):
             'urn:globus:auth:scope:transfer.api.globus.org:all',
         ]
 
-    allow_refresh_tokens = Bool(
-        help="""Allow users to have Refresh Tokens. If Refresh Tokens are not
-        allowed, users must use regular Access Tokens which will expire after
-        a set time. Set to False for increased security, True for increased
-        convenience."""
-    ).tag(config=True)
-
-    def _allow_refresh_tokens_default(self):
-        return True
-
     globus_local_endpoint = Unicode(
         help="""If Jupyterhub is also a Globus
     endpoint, its endpoint id can be specified here."""
