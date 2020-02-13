@@ -96,7 +96,7 @@ class GlobusOAuthenticator(OAuthenticator):
     ).tag(config=True)
 
     def _identity_provider_default(self):
-        return os.getenv('IDENTITY_PROVIDER', 'globusid.org')
+        return os.getenv('IDENTITY_PROVIDER', '')
 
     exclude_tokens = List(
         help="""Exclude tokens from being passed into user environments
