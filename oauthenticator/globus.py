@@ -68,13 +68,9 @@ class GlobusOAuthenticator(OAuthenticator):
     login_service = 'Globus'
     logout_handler = GlobusLogoutHandler
 
-    @default("userinfo_url")
-    def _userinfo_url_default(self):
+    @default("userdata_url")
+    def _userdata_url_default(self):
         return "https://auth.globus.org/v2/oauth2/userinfo"
-
-    userinfo_url = Unicode(
-        help="Globus URL to fetch details on a user after successful authentication"
-    ).tag(config=True)
 
     @default("authorize_url")
     def _authorize_url_default(self):
@@ -87,7 +83,6 @@ class GlobusOAuthenticator(OAuthenticator):
     revocation_url = Unicode(
         help="Globus URL to revoke live tokens."
     ).tag(config=True)
-
 
     @default("token_url")
     def _token_url_default(self):
@@ -186,7 +181,7 @@ class GlobusOAuthenticator(OAuthenticator):
         # Fetch user info at Globus's oauth2/userinfo/ HTTP endpoint to get the username
         user_headers = self.get_default_headers()
         user_headers['Authorization'] = 'Bearer {}'.format(token_json['access_token'])
-        req = HTTPRequest(self.userinfo_url, method='GET', headers=user_headers)
+        req = HTTPRequest(self.userdata_url, method='GET', headers=user_headers)
         user_resp = await http_client.fetch(req)
         user_json = json.loads(user_resp.body.decode('utf8', 'replace'))
         # It's possible for identity provider domains to be namespaced
