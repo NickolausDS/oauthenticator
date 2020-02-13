@@ -154,8 +154,6 @@ class GlobusOAuthenticator(OAuthenticator):
         """
         # Complete login and exchange the code for tokens.
         http_client = AsyncHTTPClient()
-        if not self.token_url:
-            raise ValueError("Please set the $OAUTH2_TOKEN_URL environment variable")
         params = dict(
             redirect_uri=self.get_callback_url(handler),
             code=handler.get_argument("code"),
@@ -248,20 +246,6 @@ class GlobusOAuthenticator(OAuthenticator):
                               body=urllib.parse.urlencode({'token': token}),
                               )
             await http_client.fetch(req)
-
-    def get_callback_url(self, handler=None):
-        """
-        Getting the configured callback url
-        """
-        if self.oauth_callback_url is None:
-            raise HTTPError(
-                500,
-                'No callback url provided. '
-                'Please configure by adding '
-                'c.GlobusOAuthenticator.oauth_callback_url '
-                'to the config',
-            )
-        return self.oauth_callback_url
 
     def logout_url(self, base_url):
         return url_path_join(base_url, 'logout')
