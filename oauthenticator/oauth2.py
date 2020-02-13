@@ -269,7 +269,7 @@ class OAuthenticator(Authenticator):
 
     @default("extra_authorize_params")
     def _extra_authorize_params(self):
-        return os.environ.get("OAUTH2_EXTRA_AUTHORIZE_PARAMS", "")
+        return os.environ.get("OAUTH2_EXTRA_AUTHORIZE_PARAMS", {})
 
     extra_authorize_params = Dict(
         config=True,
