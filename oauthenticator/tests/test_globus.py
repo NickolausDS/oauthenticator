@@ -1,6 +1,6 @@
 from io import BytesIO
 import json
-from base64 import b64decode
+from urllib.parse import parse_qs
 from pytest import fixture, raises
 from tornado import web
 from tornado.httpclient import HTTPResponse
@@ -24,9 +24,6 @@ def revoke_token_request_handler(request):
     assert request.method == 'POST', request.method
     auth_header = request.headers.get('Authorization')
     if auth_header:
-        header = auth_header.split(None, 1)[1]
-        print(header)
-        print(b64decode(header))
         resp = BytesIO(json.dumps({'active': False}).encode('utf8'))
         return HTTPResponse(request=request, code=200, buffer=resp)
     else:
@@ -142,19 +139,17 @@ async def test_globus_pre_spawn_start(mock_globus_user):
     await authenticator.pre_spawn_start(mock_globus_user, spawner)
     assert 'GLOBUS_DATA' in spawner.environment
 
-
-async def test_allow_refresh_tokens(globus_client, mock_globus_token_response):
-    """
-    Mock test setting GlobusOAuthenticator.allow_refresh_tokens = True
-    """
-    mock_globus_token_response['refresh_token'] = 'user_refresh_token'
-    set_extended_token_response(globus_client, 'auth.globus.org',
-                                '/v2/oauth2/token', mock_globus_token_response)
+def test_globus_defaults():
     authenticator = GlobusOAuthenticator()
-    handler = globus_client.handler_for_user(user_model('wash@uflightacademy.edu'))
-    response = await authenticator.authenticate(handler)
-    transfer_tokens = response['auth_state']['tokens']['transfer.api.globus.org']
-    assert 'refresh_token' in transfer_tokens
+    assert all('https://auth.globus.org' in url for url in [
+        authenticator.userdata_url,
+        authenticator.authorize_url,
+        authenticator.revocation_url,
+        authenticator.token_url,
+    ])
+    assert authenticator.scope == [
+        'openid', 'profile', 'urn:globus:auth:scope:transfer.api.globus.org:all'
+    ]
 
 
 async def test_restricted_domain(globus_client):
@@ -189,13 +184,38 @@ async def test_token_exclusion(globus_client):
 
 
 async def test_revoke_tokens(globus_client, mock_globus_user):
+
+    # Wrap the revocation host to 'revoke' tokens by setting them in user auth
+    # state. This way, we can get feedback to tell if the token was actually
+    # sent to our 'host'
+    def tok_revoke(request):
+        resp = revoke_token_request_handler(request)
+        token = parse_qs(request.body.decode('utf8'))['token'][0]
+        for token_dict in mock_globus_user.state['tokens'].values():
+            if token_dict['access_token'] == token:
+                token_dict['access_token'] = 'token_revoked'
+            if token_dict['refresh_token'] == token:
+                token_dict['refresh_token'] = 'token_revoked'
+        return resp
+    # Add the token revocation endpoint. It's the only revocation endpoint we need.
     globus_client.add_host('auth.globus.org', [('/v2/oauth2/token/revoke',
-                                               revoke_token_request_handler)])
+                                               tok_revoke)])
+    # Add refresh tokens to ensure those get revoked too.
+    mock_globus_user.state['tokens']['auth.globus.org']['refresh_token'] = \
+        'my_active_auth_refresh_token'
+    mock_globus_user.state['tokens']['transfer.api.globus.org']['refresh_token'] = \
+        'my_active_transfer_refresh_token'
+
+    # Revoke the tokens!
     authenticator = GlobusOAuthenticator()
-    service = {'transfer.api.globus.org': {'access_token': 'foo',
-                                           'refresh_token': 'bar'}}
-    authenticator.current_user = mock_globus_user
-    await authenticator.revoke_service_tokens(service)
+    await authenticator.revoke_service_tokens(mock_globus_user.state['tokens'])
+
+    # Check tokens were properly revoked.
+    user_tokens = mock_globus_user.state['tokens']
+    assert user_tokens['auth.globus.org']['access_token'] == 'token_revoked'
+    assert user_tokens['auth.globus.org']['access_token'] == 'token_revoked'
+    assert user_tokens['transfer.api.globus.org']['access_token'] == 'token_revoked'
+    assert user_tokens['transfer.api.globus.org']['access_token'] == 'token_revoked'
 
 
 async def test_custom_logout(monkeypatch, mock_globus_user):
