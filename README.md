@@ -14,7 +14,7 @@ OAuthenticator currently supports the following authentication services:
 - [CILogon](oauthenticator/cilogon.py)
 - [GitHub](#github-setup)
 - [GitLab](#gitlab-setup)
-- [Globus](#globus-setup)
+- [Globus](oauthenticator/globus.py)
 - [Google](#google-setup)
 - [MediaWiki](oauthenticator/mediawiki.py)
 - [Moodle](#moodle-setup)
