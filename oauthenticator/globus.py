@@ -57,7 +57,7 @@ class GlobusLogoutHandler(LogoutHandler):
                     user.name, ','.join(state['tokens'].keys())
                 )
             )
-            state['tokens'] = ''
+            state['tokens'] = {}
             await user.save_auth_state(state)
 
 
